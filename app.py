@@ -23,6 +23,10 @@ with tab_process:
     st.title("Ferramenta de Importação NGS - NMDP & LIMS")
     st.markdown("Faça o upload dos arquivos XML gerados pelo sequenciador para processar as tipagens e gerar os relatórios do SISHLA e REDOME.")
 
+    # Inicializa a variável de sessão no começo da aba para evitar o NameError
+    if 'df_quality_metrics' not in st.session_state:
+        st.session_state.df_quality_metrics = None
+
     # Componentes de Upload atualizados para aceitar XML e ZIP
     uploaded_files = st.file_uploader("Selecione o arquivo export TAR do NGSEngine (XML ou ZIP)", type=['xml', 'zip'], accept_multiple_files=True)
     uploaded_dmr = st.file_uploader("Opcional: Arquivo IL_DMR (CSV) para o REDOME", type=['csv'])
@@ -30,19 +34,17 @@ with tab_process:
     # Botão para iniciar o processamento
     if st.button("Processar Arquivos") and uploaded_files:
         
-        # --- NOVO BLOCO: FILA DE ARQUIVOS E DESCOMPACTAÇÃO EM MEMÓRIA ---
+        # --- FILA DE ARQUIVOS E DESCOMPACTAÇÃO EM MEMÓRIA ---
         xml_files_to_process = []
         
         for uploaded_file in uploaded_files:
             if uploaded_file.name.endswith('.zip'):
-                # Abre o zip diretamente da memória
                 with zipfile.ZipFile(uploaded_file, 'r') as z:
                     for filename in z.namelist():
-                        # Filtra apenas os XMLs e ignora arquivos ocultos de sistema (ex: MacOS)
                         if filename.endswith('.xml') and not filename.startswith('__MACOSX'):
-                            file_data = z.open(filename) # Retorna um objeto file-like compatível com o extract_metrics_xml
+                            file_data = z.open(filename) 
                             xml_files_to_process.append({
-                                'name': filename.split("/")[-1], # Pega apenas o nome do arquivo, ignorando as pastas internas do zip
+                                'name': filename.split("/")[-1], 
                                 'file_object': file_data
                             })
             elif uploaded_file.name.endswith('.xml'):
@@ -56,9 +58,11 @@ with tab_process:
             st.stop()
         # ----------------------------------------------------------------
 
-        # Barra de progresso para a interface
         progress_bar = st.progress(0)
         status_text = st.empty()
+        
+        # Lista vazia criada ANTES do loop para guardar as métricas de todos os lotes
+        lista_todas_metricas = []
         
         # O loop agora itera sobre a fila unificada que criamos
         for i, item in enumerate(xml_files_to_process):
@@ -66,29 +70,21 @@ with tab_process:
             status_text.text(f"Processando lote: {batch_name}...")
             
             try:
-                # 1. Extração do XML (passando o objeto em memória extraído)
                 df = extract_metrics_xml(item['file_object'])
                 
                 # --- CAPTURA DINÂMICA DA VERSÃO IMGT ---
-                imgt_version = '3.62.0'  # Versão padrão de fallback caso algo falhe
+                imgt_version = '3.62.0' 
                 
                 if 'imgt_version' in df.columns and not df['imgt_version'].empty:
-                    # Obtém o valor bruto da primeira linha (ex: "IMGT/HLA 3.62.0")
                     raw_version = df['imgt_version'].dropna().iloc[0]
-                    
-                    # Expressão regular para capturar apenas o padrão de números e pontos (ex: 3.62.0)
                     import re
                     match = re.search(r'(\d+\.\d+\.\d+)', str(raw_version))
                     if match:
                         imgt_version = match.group(1)
                 
-                # Exibe na interface web qual versão foi detectada e carregada
                 st.info(f"Lote `{batch_name}`: Base de dados IMGT {imgt_version} detectada e carregada automaticamente.")
                 
-                # Inicializa o objeto ARD com a versão correta extraída do próprio arquivo
-                # Buscará diretamente a pasta correspondente dentro de './py_ard_db'
                 ard = init_pyard(imgt_version)
-                # ----------------------------------------
 
                 df_typing = df.copy()
                 df_quality_metrics = df_typing.copy()
@@ -103,6 +99,9 @@ with tab_process:
                         'core_qm_read_depth_min', 'core_qm_secondbase_min']
                 
                 df_quality_metrics = df_quality_metrics[qm_cols]
+                
+                # Adiciona as métricas DESSA corrida à lista geral
+                lista_todas_metricas.append(df_quality_metrics.copy())
 
                 # 2. Limpeza e Filtros
                 df_typing = df_typing.loc[(df_typing['locus_review_status'] == 'Approved') & (~df_typing['sample_name'].str.contains('1044736'))]
@@ -112,49 +111,43 @@ with tab_process:
                                 "HLA-DQB1","HLA-DPB1", "HLA-DQA1","HLA-DPA1"]
                 df_typing = df_typing.loc[df_typing["locus_name"].isin(classical_loci)]
 
-                # --- NOVO BLOCO: CACHE MULTI-VERSÃO IMGT ---
+                # --- CACHE MULTI-VERSÃO IMGT ---
                 import re
                 
-                # 1. Limpar a coluna imgt_version para extrair apenas o número (ex: "IMGT/HLA 3.62.0" -> "3.62.0")
                 def extract_version(text):
                     if pd.notnull(text):
                         match = re.search(r'(\d+\.\d+\.\d+)', str(text))
                         return match.group(1) if match else '3.62.0'
-                    return '3.62.0' # Fallback de segurança
+                    return '3.62.0' 
 
                 df_typing['imgt_version_clean'] = df_typing['imgt_version'].apply(extract_version)
 
-                # 2. Descobrir quais versões únicas existem neste dataframe
                 versoes_unicas = df_typing['imgt_version_clean'].unique()
                 st.info(f"Lote `{batch_name}`: Versões IMGT detectadas: {', '.join(versoes_unicas)}")
 
-                # 3. Inicializar o pyard UMA VEZ para cada versão encontrada (Cache)
                 ard_cache = {}
                 for v in versoes_unicas:
                     ard_cache[v] = init_pyard(v)
 
-                # --- REDUÇÃO PARA 3 CAMPOS USANDO A VERSÃO CORRETA DA LINHA ---
                 def aplicar_reducao(row, col_name):
                     valor = row[col_name]
                     versao = row['imgt_version_clean']
-                    ard_instancia = ard_cache[versao] # Pega o pyard correto do cache
+                    ard_instancia = ard_cache[versao] 
                     
                     if (valor is not None) and (len(str(valor).split(':')) > 3):
                         return typing_3_fields(ard_instancia, valor)
                     return valor
 
-                # Usamos apply(axis=1) para ter acesso à linha inteira (e poder ler a versão correspondente)
                 df_typing['nmdp_typing_allele1'] = df_typing.apply(lambda row: aplicar_reducao(row, 'nmdp_typing_allele1'), axis=1)
                 df_typing['nmdp_typing_allele2'] = df_typing.apply(lambda row: aplicar_reducao(row, 'nmdp_typing_allele2'), axis=1)
                 
                 df_typing['_alelo01+alelo02'] = df_typing["nmdp_typing_allele1"] + "+" + df_typing["nmdp_typing_allele2"]
                 
-                # --- REQUISIÇÃO MAC API COM A VERSÃO CORRETA DA LINHA ---
+                # --- REQUISIÇÃO MAC API ---
                 df_typings_to_mac = df_typing.loc[df_typing['_alelo01+alelo02'].str.contains(r"\?", na=False)].copy()
                 
                 if not df_typings_to_mac.empty:
                     status_text.text(f"Consultando API NMDP MAC para {len(df_typings_to_mac)} alelos...")
-                    # Passa o typing_result e a imgt_version_clean específicos daquela linha para a API
                     df_typings_to_mac['_alelo01+alelo02'] = df_typings_to_mac.apply(
                         lambda row: encode_mac(row['typing_result'], row['imgt_version_clean']), axis=1
                     )
@@ -174,74 +167,58 @@ with tab_process:
                 # 7. Formatação REDOME
                 df_redome = format_df(df_typing_complete, 'redome')
                 
-                # Se o usuário fez upload da planilha DMR, fazemos o merge
                 if uploaded_dmr is not None:
                     df_ils_dmrs = pd.read_csv(uploaded_dmr, dtype=str, encoding="latin", sep=";")
                     df_redome = pd.merge(df_redome, df_ils_dmrs[["Patient", "DMR"]], left_on='sample_name', right_on="Patient", how='left')
                     df_redome = df_redome.rename(columns={"DMR" : "00_DMR"})
                     df_redome = df_redome.reindex(sorted(df_redome.columns), axis=1)
 
-                # --- GERAÇÃO DOS ARQUIVOS PARA DOWNLOAD ---
-                st.success(f"Lote {batch_name} processado com sucesso!")
-                
-                # Função auxiliar para converter DF para CSV em memória
-                @st.cache_data
-                def convert_df(df):
-                    return df.to_csv(sep=';', index=False, encoding='utf-8').encode('utf-8')
-
-                # Organizando os botões de download lado a lado
                 # --- GERAÇÃO DO ARQUIVO ZIP PARA DOWNLOAD ÚNICO ---
                 st.success(f"Lote {batch_name} processado com sucesso!")
                 
-                # Criando um buffer em memória para o arquivo ZIP
                 zip_buffer = BytesIO()
                 
-                # Construindo o ZIP em memória (ZIP_DEFLATED aplica compressão)
                 with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-                    # Escreve o CSV do SISHLA
                     zip_file.writestr(
                         f"resultados_{batch_name}_sishla_format.csv", 
                         df_sishla.to_csv(sep=';', index=False, encoding='utf-8')
                     )
                     
-                    # Escreve o CSV do REDOME
                     zip_file.writestr(
                         f"resultados_{batch_name}_redome_format.csv", 
                         df_redome.to_csv(sep=';', index=False, encoding='utf-8')
                     )
                     
-                    # Escreve o CSV de Qualidade
                     zip_file.writestr(
                         f"resultados_{batch_name}_informacoes_adicionais.csv", 
                         df_quality_metrics.to_csv(sep=';', index=False, encoding='utf-8')
                     )
                 
-                # Retorna o ponteiro do buffer para o início para que o Streamlit consiga ler
                 zip_buffer.seek(0)
 
-                # Apenas 1 botão centralizado
                 st.download_button(
                     label=f"📦 Baixar Pacote de Resultados ({batch_name})",
                     data=zip_buffer,
                     file_name=f"relatorios_completos_{batch_name}.zip",
                     mime="application/zip",
-                    use_container_width=True # Deixa o botão mais largo e visível
+                    use_container_width=True 
                 )
                     
-                st.markdown("---") # Linha separadora para o próximo arquivo
+                st.markdown("---") 
                 
             except Exception as e:
                 st.error(f"Erro ao processar {batch_name}: {e}")
-                
-            progress_bar.progress((i + 1) / len(uploaded_files))
+            
+            # A barra de progresso avança usando o tamanho da nova lista descompactada
+            progress_bar.progress((i + 1) / len(xml_files_to_process))
             
         status_text.text("Processamento concluído!")
 
-    if 'df_quality_metrics' not in st.session_state:
-        st.session_state.df_quality_metrics = None
-    
-    st.session_state.df_quality_metrics = df_quality_metrics
+        # Atualiza a sessão global com TODOS os lotes juntos para o Dashboard ler depois
+        if lista_todas_metricas:
+            st.session_state.df_quality_metrics = pd.concat(lista_todas_metricas, ignore_index=True)
 
+            
 with tab_dash:
     if st.session_state.df_quality_metrics is not None:
         df_qm = st.session_state.df_quality_metrics
