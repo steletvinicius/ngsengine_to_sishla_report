@@ -184,29 +184,43 @@ if st.button("Processar Arquivos") and uploaded_files:
                 return df.to_csv(sep=';', index=False, encoding='utf-8').encode('utf-8')
 
             # Organizando os botões de download lado a lado
-            col1, col2, col3 = st.columns(3)
+            # --- GERAÇÃO DO ARQUIVO ZIP PARA DOWNLOAD ÚNICO ---
+            st.success(f"Lote {batch_name} processado com sucesso!")
             
-            with col1:
-                st.download_button(
-                    label="Baixar SISHLA",
-                    data=convert_df(df_sishla),
-                    file_name=f"resultados_{batch_name}_sishla_format.csv",
-                    mime="text/csv",
+            # Criando um buffer em memória para o arquivo ZIP
+            zip_buffer = BytesIO()
+            
+            # Construindo o ZIP em memória (ZIP_DEFLATED aplica compressão)
+            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+                # Escreve o CSV do SISHLA
+                zip_file.writestr(
+                    f"resultados_{batch_name}_sishla_format.csv", 
+                    df_sishla.to_csv(sep=';', index=False, encoding='utf-8')
                 )
-            with col2:
-                st.download_button(
-                    label="Baixar REDOME",
-                    data=convert_df(df_redome),
-                    file_name=f"resultados_{batch_name}_redome_format.csv",
-                    mime="text/csv",
+                
+                # Escreve o CSV do REDOME
+                zip_file.writestr(
+                    f"resultados_{batch_name}_redome_format.csv", 
+                    df_redome.to_csv(sep=';', index=False, encoding='utf-8')
                 )
-            with col3:
-                st.download_button(
-                    label="Baixar Qualidade (Adicionais)",
-                    data=convert_df(df_quality_metrics),
-                    file_name=f"resultados_{batch_name}_informacoes_adicionais.csv",
-                    mime="text/csv",
+                
+                # Escreve o CSV de Qualidade
+                zip_file.writestr(
+                    f"resultados_{batch_name}_informacoes_adicionais.csv", 
+                    df_quality_metrics.to_csv(sep=';', index=False, encoding='utf-8')
                 )
+            
+            # Retorna o ponteiro do buffer para o início para que o Streamlit consiga ler
+            zip_buffer.seek(0)
+
+            # Apenas 1 botão centralizado
+            st.download_button(
+                label=f"📦 Baixar Pacote de Resultados ({batch_name})",
+                data=zip_buffer,
+                file_name=f"relatorios_completos_{batch_name}.zip",
+                mime="application/zip",
+                use_container_width=True # Deixa o botão mais largo e visível
+            )
                 
             st.markdown("---") # Linha separadora para o próximo arquivo
             
