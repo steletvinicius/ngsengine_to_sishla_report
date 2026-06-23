@@ -2,3 +2,4 @@ streamlit
 pandas
 requests
 py-ard
+plotly
