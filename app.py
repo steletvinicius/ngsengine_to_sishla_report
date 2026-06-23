@@ -237,10 +237,10 @@ with tab_process:
             
         status_text.text("Processamento concluído!")
 
-        if 'df_quality_metrics' not in st.session_state:
-            st.session_state.df_quality_metrics = None
-        
-        st.session_state.df_quality_metrics = df_quality_metrics
+    if 'df_quality_metrics' not in st.session_state:
+        st.session_state.df_quality_metrics = None
+    
+    st.session_state.df_quality_metrics = df_quality_metrics
 
 with tab_dash:
     if st.session_state.df_quality_metrics is not None:
