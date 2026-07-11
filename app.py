@@ -23,6 +23,14 @@ with tab_process:
     st.title("Ferramenta de Importação NGS - NMDP & LIMS")
     st.markdown("Faça o upload dos arquivos XML gerados pelo sequenciador para processar as tipagens e gerar os relatórios do SISHLA e REDOME.")
 
+    @st.cache_resource
+    def instanciar_pyard_seguro(versao):
+        """
+        O @st.cache_resource diz ao Streamlit para carregar o motor pesado do py-ard 
+        apenas UMA VEZ na memória global do servidor, evitando o Segmentation Fault.
+        """
+        return init_pyard(versao)
+
     # Inicializa a variável de sessão no começo da aba para evitar o NameError
     if 'df_quality_metrics' not in st.session_state:
         st.session_state.df_quality_metrics = None
@@ -125,9 +133,12 @@ with tab_process:
                 versoes_unicas = df_typing['imgt_version_clean'].unique()
                 st.info(f"Lote `{batch_name}`: Versões IMGT detectadas: {', '.join(versoes_unicas)}")
 
+                # 3. Inicializar o pyard UMA VEZ para cada versão encontrada (Cache)
                 ard_cache = {}
                 for v in versoes_unicas:
-                    ard_cache[v] = init_pyard(v)
+                    st.info(f"Carregando banco IMGT {v} na memória (isso pode levar alguns segundos)...")
+                    # Chamamos a função com o @st.cache_resource em vez do init_pyard diretamente
+                    ard_cache[v] = instanciar_pyard_seguro(v)
 
                 def aplicar_reducao(row, col_name):
                     valor = row[col_name]
