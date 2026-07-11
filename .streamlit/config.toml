@@ -1,3 +1,0 @@
-[server]
-# Aumenta o limite de upload para 1000 Megabytes (1 GB)
-maxUploadSize = 1000
